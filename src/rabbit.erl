@@ -33,12 +33,6 @@
 -export([log_locations/0, config_files/0, decrypt_config/2]). %% for testing and mgmt-agent
 -export([is_booted/1, is_booted/0, is_booting/1, is_booting/0]).
 
--ifdef(TEST).
-
--export([start_logger/0]).
-
--endif.
-
 %%---------------------------------------------------------------------------
 %% Boot steps.
 -export([maybe_insert_default_data/0, boot_delegate/0, recover/0]).
@@ -253,7 +247,7 @@
 -include("rabbit_framing.hrl").
 -include("rabbit.hrl").
 
--define(APPS, [os_mon, mnesia, rabbit_common, ra, sysmon_handler, rabbit]).
+-define(APPS, [os_mon, mnesia, rabbit_common, rabbitmq_prelaunch, ra, sysmon_handler, rabbit]).
 
 -define(ASYNC_THREADS_WARNING_THRESHOLD, 8).
 
@@ -289,13 +283,9 @@ start() ->
                      %% We do not want to upgrade mnesia after just
                      %% restarting the app.
                      ok = ensure_application_loaded(),
-                     HipeResult = rabbit_hipe:maybe_hipe_compile(),
-                     ok = start_logger(),
-                     rabbit_hipe:log_hipe_result(HipeResult),
+                     ok = run_prelaunch_phase(),
                      Apps = load_all_apps(),
-                     rabbit_feature_flags:initialize_registry(),
-                     rabbit_node_monitor:prepare_cluster_status_files(),
-                     rabbit_mnesia:check_cluster_consistency(),
+                     % XXX rabbit_mnesia:check_cluster_consistency(),
                      broker_start(Apps)
              end).
 
@@ -303,32 +293,41 @@ start() ->
 
 boot() ->
     start_it(fun() ->
-                     ensure_config(),
                      ok = ensure_application_loaded(),
-                     HipeResult = rabbit_hipe:maybe_hipe_compile(),
-                     ok = start_logger(),
-                     rabbit_hipe:log_hipe_result(HipeResult),
+                     ok = run_prelaunch_phase(),
                      Apps = load_all_apps(),
-                     rabbit_feature_flags:initialize_registry(),
-                     rabbit_node_monitor:prepare_cluster_status_files(),
-                     ok = rabbit_upgrade:maybe_upgrade_mnesia(),
+                     % XXX ok = rabbit_upgrade:maybe_upgrade_mnesia(),
                      %% It's important that the consistency check happens after
                      %% the upgrade, since if we are a secondary node the
                      %% primary node will have forgotten us
-                     rabbit_mnesia:check_cluster_consistency(),
+                     % XXX rabbit_mnesia:check_cluster_consistency(),
                      broker_start(Apps)
              end).
 
-ensure_config() ->
-    case rabbit_config:validate_config_files() of
-        ok -> ok;
-        {error, {ErrFmt, ErrArgs}} ->
-            throw({error, {check_config_file, ErrFmt, ErrArgs}})
-    end,
-    case rabbit_config:prepare_and_use_config() of
-        {error, {generation_error, Error}} ->
-            throw({error, {generate_config_file, Error}});
-        ok -> ok
+run_prelaunch_phase() ->
+    %% Run the prelaunch phase. Everything is inside the
+    %% rabbitmq_prelaunch application.
+    %%
+    %% This application is started manually before all other
+    %% applications because it finishes to configure the environment and
+    %% node. Other applications rely on this.
+
+    %% A special case: we configure a couple Lager variables here
+    %% because rabbitmq_prelaunch depends on Lager and Lager creates
+    %% files and directories in the current working directory
+    %% by default. Therefore we disable those files and let
+    %% rabbitmq_prelaunch reconfigure Lager.
+    ok = application:set_env(
+           lager, crash_log, false, [{persistent, true}]),
+    ok = application:set_env(
+           lager, handlers, [], [{persistent, true}]),
+
+    case application:ensure_all_started(rabbitmq_prelaunch) of
+        {ok, _} ->
+            ok;
+        {error, Reason} ->
+            Fun = handle_app_error(could_not_start),
+            Fun(rabbitmq_prelaunch, Reason)
     end.
 
 load_all_apps() ->
@@ -464,8 +463,8 @@ start_it(StartFun) ->
                         true  -> ok;
                         false -> StartFun()
                     end
-                catch Class:Reason ->
-                    boot_error(Class, Reason)
+                catch Class:Reason:Stacktrace ->
+                    boot_error(Class, Reason, Stacktrace)
                 after
                     unlink(Marker),
                     Marker ! stop,
@@ -1011,9 +1010,9 @@ stop(_State) ->
          end,
     ok.
 
--spec boot_error(term(), not_available | [tuple()]) -> no_return().
+-spec boot_error(term(), not_available | [tuple()], term()) -> no_return().
 
-boot_error(_, {could_not_start, rabbit, {{timeout_waiting_for_tables, _}, _}}) ->
+boot_error(_, {could_not_start, rabbit, {{timeout_waiting_for_tables, _}, _}}, _) ->
     AllNodes = rabbit_mnesia:cluster_nodes(all),
     Suffix = "~nBACKGROUND~n==========~n~n"
         "This cluster node was shut down while other nodes were still running.~n"
@@ -1033,33 +1032,39 @@ boot_error(_, {could_not_start, rabbit, {{timeout_waiting_for_tables, _}, _}}) -
     log_boot_error_and_exit(
       timeout_waiting_for_tables,
       "~n" ++ Err ++ rabbit_nodes:diagnostics(Nodes), []);
-boot_error(_, {error, {cannot_log_to_file, unknown, Reason}}) ->
+boot_error(Class, {could_not_start, rabbitmq_prelaunch,
+                   {rabbitmq_prelaunch,
+                    {{shutdown, {failed_to_start_child, _, RealReason}},
+                     _}}}, Stacktrace) ->
+    %% We recurse with the error returned by rabbitmq_prelaunch.
+    boot_error(Class, {error, RealReason}, Stacktrace);
+boot_error(_, {error, {cannot_log_to_file, unknown, Reason}}, _) ->
     log_boot_error_and_exit(could_not_initialise_logger,
                             "failed to initialised logger: ~p~n",
                             [Reason]);
 boot_error(_, {error, {cannot_log_to_file, LogFile,
-                        {cannot_create_parent_dirs, _, Reason}}}) ->
+                        {cannot_create_parent_dirs, _, Reason}}}, _) ->
     log_boot_error_and_exit(could_not_initialise_logger,
                             "failed to create parent directory for log file at '~s', reason: ~p~n",
                             [LogFile, Reason]);
-boot_error(_, {error, {cannot_log_to_file, LogFile, Reason}}) ->
+boot_error(_, {error, {cannot_log_to_file, LogFile, Reason}}, _) ->
     log_boot_error_and_exit(could_not_initialise_logger,
                             "failed to open log file at '~s', reason: ~p~n",
                             [LogFile, Reason]);
-boot_error(_, {error, {generate_config_file, Error}}) ->
+boot_error(_, {error, {generate_config_file, Error}}, _) ->
     log_boot_error_and_exit(generate_config_file,
       "~nConfig file generation failed:~n~s"
       "In case the setting comes from a plugin, make sure that the plugin is enabled.~n"
       "Alternatively remove the setting from the config.~n",
       [Error]);
-boot_error(Class, Reason) ->
+boot_error(Class, Reason, Stacktrace) ->
     LogLocations = log_locations(),
     log_boot_error_and_exit(
       Reason,
       "~nError description:~s"
       "~nLog file(s) (may contain more information):~n" ++
       lists:flatten(["   ~s~n" || _ <- lists:seq(1, length(LogLocations))]),
-      [lager:pr_stacktrace(erlang:get_stacktrace(), {Class, Reason})] ++
+      [lager:pr_stacktrace(Stacktrace, {Class, Reason})] ++
       LogLocations).
 
 -spec log_boot_error_and_exit(_, _, _) -> no_return().
@@ -1127,10 +1132,6 @@ insert_default_data() ->
 
 %%---------------------------------------------------------------------------
 %% logging
-
-start_logger() ->
-    rabbit_lager:start_logger(),
-    ok.
 
 -spec log_locations() -> [rabbit_lager:log_location()].
 log_locations() ->
