@@ -14,6 +14,8 @@ set SCRIPT_DIR=%TDP0%
 set SCRIPT_NAME=%1
 for /f "delims=" %%F in ("%SCRIPT_DIR%..") do set RABBITMQ_HOME=%%~dpF%%~nF%%~xF
 
+set ERL_LIBS=%ERL_LIBS%;%RABBITMQ_HOME%\plugins
+
 REM If ERLANG_HOME is not defined, check if "erl.exe" is available in
 REM the path and use that.
 if not defined ERLANG_HOME (

@@ -67,8 +67,6 @@ if "!ENV_OK!"=="false" (
     EXIT /b 78
 )
 
-CALL :set_default_pa_arg
-
 if "!RABBITMQ_ALLOW_INPUT!"=="" (
     set ERL_CMD=erl.exe
 ) else (
@@ -76,7 +74,6 @@ if "!RABBITMQ_ALLOW_INPUT!"=="" (
 )
 
 "!ERLANG_HOME!\bin\!ERL_CMD!" ^
-!pa_arg! ^
 !RABBITMQ_START_RABBIT! ^
 -boot "!SASL_BOOT_FILE!" ^
 +W w ^
@@ -102,13 +99,6 @@ if "%~2"=="" (
     set ENV_OK=false
     EXIT /B 78
     )
-EXIT /B 0
-
-:set_default_pa_arg
-set pa_arg=
-for %%f in (!RABBITMQ_HOME!\plugins\*.ez) do (
-    set pa_arg=!pa_arg! -pa %%f\%%~nf\ebin
-)
 EXIT /B 0
 
 endlocal
