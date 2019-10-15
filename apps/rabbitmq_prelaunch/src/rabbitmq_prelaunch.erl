@@ -169,8 +169,7 @@ shutdown_func(Reason) ->
 
 write_pid_file(#{pid_file := PidFile}) ->
     rabbit_log_prelaunch:debug("Writing PID file: ~s", [PidFile]),
-    Parent = filename:dirname(PidFile),
-    case rabbitmq_prelaunch_helpers:mkdir_p(Parent) of
+    case filelib:ensure_dir(PidFile) of
         ok ->
             OSPid = os:getpid(),
             case file:write_file(PidFile, OSPid) of

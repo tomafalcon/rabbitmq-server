@@ -5,8 +5,7 @@
 setup(#{feature_flags_file := FFFile}) ->
     rabbit_log_prelaunch:debug(""),
     rabbit_log_prelaunch:debug("== Feature flags =="),
-    Parent = filename:dirname(FFFile),
-    case rabbitmq_prelaunch_helpers:mkdir_p(Parent) of
+    case filelib:ensure_dir(FFFile) of
         ok ->
             rabbit_log_prelaunch:debug("Initializing feature flags registry"),
             case rabbit_feature_flags:initialize_registry() of
