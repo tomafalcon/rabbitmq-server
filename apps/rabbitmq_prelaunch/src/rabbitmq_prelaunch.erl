@@ -1,5 +1,7 @@
 -module(rabbitmq_prelaunch).
 
+-include_lib("eunit/include/eunit.hrl").
+
 -export([run/0,
          shutdown_func/1]).
 
@@ -7,7 +9,10 @@
 
 run() ->
     try
-        run(node())
+        case get_context() of
+            undefined -> initial_run();
+            Context   -> subsequent_run(Context)
+        end
     catch
         throw:{error, _} = Exception ->
             Exception;
@@ -16,12 +21,13 @@ run() ->
             {error, {exception, Class, Reason, Stacktrace}}
     end.
 
-run(nonode@nohost) ->
+initial_run() ->
     %% Configure dbg if requested.
     rabbitmq_prelaunch_logging:enable_quick_dbg(rabbit_env:dbg_config()),
 
     %% Get informations to setup logging.
     Context0 = rabbit_env:get_context_before_logging_init(),
+    ?assertMatch(#{}, Context0),
 
     %% Setup logging for the prelaunch phase.
     ok = rabbitmq_prelaunch_logging:enable_prelaunch_logging(Context0, true),
@@ -29,11 +35,13 @@ run(nonode@nohost) ->
 
     %% Load rabbitmq-env.conf, redo logging setup and continue.
     Context1 = rabbit_env:get_context_after_logging_init(Context0),
+    ?assertMatch(#{}, Context1),
     ok = rabbitmq_prelaunch_logging:enable_prelaunch_logging(Context1, true),
     rabbit_env:log_process_env(),
 
     %% Complete context now that we have the final environment loaded.
     Context2 = rabbit_env:get_context_after_reloading_env(Context1),
+    ?assertMatch(#{}, Context2),
     store_context(Context2),
 
     Context = Context2#{initial_pass => true},
@@ -79,10 +87,10 @@ run(nonode@nohost) ->
             log_exception(Class, Reason, Stacktrace, true),
             remove_pid_file(Context),
             {error, {exception, Class, Reason, Stacktrace}}
-    end;
-run(_) ->
+    end.
+
+subsequent_run(Context0) when is_map(Context0) ->
     rabbit_log_prelaunch:notice("Prelaunch executed again"),
-    Context0 = get_context(),
 
     Context = Context0#{initial_pass => false},
     rabbit_env:log_context(Context),
@@ -110,13 +118,13 @@ run(_) ->
             {error, {exception, Class, Reason, Stacktrace}}
     end.
 
-store_context(Context) ->
+store_context(Context) when is_map(Context) ->
     rabbitmq_prelaunch_helpers:set_env(context, Context).
 
 get_context() ->
     case rabbitmq_prelaunch_helpers:get_env(context) of
-        {ok, Context} -> Context;
-        undefined     -> undefined
+        {ok, Context} when is_map(Context) -> Context;
+        undefined                          -> undefined
     end.
 
 stop_mnesia() ->

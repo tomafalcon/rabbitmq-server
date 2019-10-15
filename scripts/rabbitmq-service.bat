@@ -35,6 +35,38 @@ REM Get default settings with user overrides for (RABBITMQ_)<var_name>
 REM Non-empty defaults should be set in rabbitmq-env
 call "%TDP0%\rabbitmq-env.bat" %~n0
 
+REM Check for the short names here too
+if "!RABBITMQ_USE_LONGNAME!"=="true" (
+    set RABBITMQ_NAME_TYPE=-name
+    set NAMETYPE=longnames
+) else (
+    if "!USE_LONGNAME!"=="true" (
+        set RABBITMQ_USE_LONGNAME=true
+        set RABBITMQ_NAME_TYPE=-name
+        set NAMETYPE=longnames
+    ) else (
+        set RABBITMQ_USE_LONGNAME=false
+        set RABBITMQ_NAME_TYPE=-sname
+        set NAMETYPE=shortnames
+    )
+)
+
+REM [ "x" = "x$RABBITMQ_NODENAME" ] && RABBITMQ_NODENAME=${NODENAME}
+if "!RABBITMQ_NODENAME!"=="" (
+    if "!NODENAME!"=="" (
+        REM We use Erlang to query the local hostname because
+        REM !COMPUTERNAME! and Erlang may return different results.
+        REM Start erl with -sname to make sure epmd is started.
+        call "%ERLANG_HOME%\bin\erl.exe" -A0 -noinput -boot start_clean -sname rabbit-prelaunch-epmd -eval "init:stop()." >nul 2>&1
+        for /f "delims=" %%F in ('call "%ERLANG_HOME%\bin\erl.exe" -A0 -noinput -boot start_clean -eval "net_kernel:start([list_to_atom(""rabbit-gethostname-"" ++ os:getpid()), %NAMETYPE%]), [_, H] = string:tokens(atom_to_list(node()), ""@""), io:format(""~s~n"", [H]), init:stop()."') do @set HOSTNAME=%%F
+        set RABBITMQ_NODENAME=rabbit@!HOSTNAME!
+        set HOSTNAME=
+    ) else (
+        set RABBITMQ_NODENAME=!NODENAME!
+    )
+)
+set NAMETYPE=
+
 set STARVAR=
 shift
 :loop1
@@ -136,6 +168,8 @@ if "!RABBITMQ_SERVICE_RESTART!"=="" (
 
 set ENV_OK=true
 CALL :check_not_empty "RABBITMQ_BOOT_MODULE" !RABBITMQ_BOOT_MODULE!
+CALL :check_not_empty "RABBITMQ_NAME_TYPE" !RABBITMQ_NAME_TYPE!
+CALL :check_not_empty "RABBITMQ_NODENAME" !RABBITMQ_NODENAME!
 
 if "!ENV_OK!"=="false" (
     EXIT /b 78
@@ -169,6 +203,7 @@ set ERLANG_SERVICE_ARGUMENTS=!ERLANG_SERVICE_ARGUMENTS:"=\"!
 -env ERL_MAX_PORTS="!ERL_MAX_PORTS!" ^
 -workdir "!RABBITMQ_BASE!" ^
 -stopaction "rabbit:stop_and_halt()." ^
+!RABBITMQ_NAME_TYPE! !RABBITMQ_NODENAME! ^
 !CONSOLE_FLAG! ^
 -comment "Multi-protocol open source messaging broker" ^
 -args "!ERLANG_SERVICE_ARGUMENTS!" > NUL
