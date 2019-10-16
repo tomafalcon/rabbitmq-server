@@ -99,39 +99,59 @@ do_update_enabled_plugins_file(#{enabled_plugins_file := File}, List) ->
             throw({error, failed_to_update_enabled_plugins_file})
     end.
 
-find_actual_main_config_file(#{main_config_file_noex := FileNoEx}) ->
-    OldFormatFile = FileNoEx ++ ".config",
-    NewFormatFile = FileNoEx ++ ".conf",
-    case filelib:is_regular(OldFormatFile) of
+find_actual_main_config_file(#{main_config_file := File}) ->
+    case filelib:is_regular(File) of
         true ->
-            case filelib:is_regular(NewFormatFile) of
-                true ->
-                    rabbit_log_prelaunch:warning(
-                      "Both old (.config) and new (.conf) format config "
-                      "files exist."),
-                    rabbit_log_prelaunch:warning(
-                      "Using the old format config file: ~s",
-                      [OldFormatFile]),
-                    rabbit_log_prelaunch:warning(
-                      "Please update your config files to the new format "
-                      "and remove the old file."),
-                    ok;
-                false ->
-                    ok
+            Format = case filename:extension(File) of
+                ".conf"   -> cuttlefish;
+                ".config" -> erlang;
+                _         -> determine_config_format(File)
             end,
-            {OldFormatFile, erlang};
+            {File, Format};
         false ->
-            case filelib:is_regular(NewFormatFile) of
-                true  -> {NewFormatFile, cuttlefish};
-                false -> undefined
+            OldFormatFile = File ++ ".config",
+            NewFormatFile = File ++ ".conf",
+            case filelib:is_regular(OldFormatFile) of
+                true ->
+                    case filelib:is_regular(NewFormatFile) of
+                        true ->
+                            rabbit_log_prelaunch:warning(
+                              "Both old (.config) and new (.conf) format config "
+                              "files exist."),
+                            rabbit_log_prelaunch:warning(
+                              "Using the old format config file: ~s",
+                              [OldFormatFile]),
+                            rabbit_log_prelaunch:warning(
+                              "Please update your config files to the new format "
+                              "and remove the old file."),
+                            ok;
+                        false ->
+                            ok
+                    end,
+                    {OldFormatFile, erlang};
+                false ->
+                    case filelib:is_regular(NewFormatFile) of
+                        true  -> {NewFormatFile, cuttlefish};
+                        false -> undefined
+                    end
             end
     end.
 
-find_actual_advanced_config_file(#{advanced_config_file_noex := FileNoEx}) ->
-    File = FileNoEx ++ ".config",
+find_actual_advanced_config_file(#{advanced_config_file := File}) ->
     case filelib:is_regular(File) of
         true  -> File;
         false -> undefined
+    end.
+
+determine_config_format(File) ->
+    case filelib:filesize(File) of
+        0 ->
+            cuttlefish;
+        _ ->
+            case file:consult(File) of
+                {ok, _} -> erlang;
+                _       -> cuttlefish
+            end
     end.
 
 load_erlang_term_based_config_file(ConfigFile) ->

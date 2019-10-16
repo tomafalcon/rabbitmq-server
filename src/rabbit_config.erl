@@ -93,7 +93,7 @@ config_setting() ->
         {ok, File1} -> File1;
         undefined   ->
             case application:get_env(rabbitmq_prelaunch, context) of
-                #{main_config_file_noex := File2} -> File2;
-                _                                 -> none
+                #{main_config_file := File2} -> File2;
+                _                            -> none
             end
     end.
