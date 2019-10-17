@@ -192,9 +192,21 @@ set ERLANG_SERVICE_ARGUMENTS= ^
 set ERLANG_SERVICE_ARGUMENTS=!ERLANG_SERVICE_ARGUMENTS:\=\\!
 set ERLANG_SERVICE_ARGUMENTS=!ERLANG_SERVICE_ARGUMENTS:"=\"!
 
+rem We resolve %APPDATA% at install time so that the user's %APPDATA%
+rem is passed to `rabbit_env` at runtime (instead of the service's
+rem %APPDAT%).
+rem
+rem The goal is to keep the same behavior as when RabbitMQ data
+rem locations were decided in `rabbitmq-env.bat` (sourced by this
+rem script), even if now, we compute everything in `rabbit_env` at
+rem runtime.
+rem
+rem We may revisit this in the future so that no data is stored in a
+rem user-specific directory.
 "!ERLANG_SERVICE_MANAGER_PATH!\erlsrv" set !RABBITMQ_SERVICENAME! ^
 -onfail !RABBITMQ_SERVICE_RESTART! ^
 -machine "!ERLANG_SERVICE_MANAGER_PATH!\erl.exe" ^
+-env APPDATA="!APPDATA!" ^
 -env ERL_LIBS="!ERL_LIBS!" ^
 -env ERL_MAX_ETS_TABLES="!ERL_MAX_ETS_TABLES!" ^
 -env ERL_MAX_PORTS="!ERL_MAX_PORTS!" ^
