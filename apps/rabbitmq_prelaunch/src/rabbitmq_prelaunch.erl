@@ -36,15 +36,9 @@ initial_run() ->
     %% Load rabbitmq-env.conf, redo logging setup and continue.
     Context1 = rabbit_env:get_context_after_logging_init(Context0),
     ?assertMatch(#{}, Context1),
-    ok = rabbitmq_prelaunch_logging:enable_prelaunch_logging(Context1, true),
-    rabbit_env:log_process_env(),
+    store_context(Context1),
 
-    %% Complete context now that we have the final environment loaded.
-    Context2 = rabbit_env:get_context_after_reloading_env(Context1),
-    ?assertMatch(#{}, Context2),
-    store_context(Context2),
-
-    Context = Context2#{initial_pass => true},
+    Context = Context1#{initial_pass => true},
     rabbit_env:log_context(Context),
 
     rabbit_env:context_to_code_path(Context),
