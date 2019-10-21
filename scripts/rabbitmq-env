@@ -156,11 +156,14 @@ fi
 
 ##--- End of overridden <var_name> variables
 
-set_default_pa_arg()
+_rmq_env_set_erl_libs()
 {
-    for file in "${RABBITMQ_HOME}/plugins"/*.ez; do
-        pa_arg="$pa_arg -pa $file/$(basename "$file" .ez)/ebin"
-    done
+    if [ -n "$ERL_LIBS" ]
+    then
+        export ERL_LIBS="$RABBITMQ_HOME/plugins:$ERL_LIBS"
+    else
+        export ERL_LIBS="$RABBITMQ_HOME/plugins"
+    fi
 }
 
 run_escript()
@@ -170,13 +173,12 @@ run_escript()
     escript="${1:?escript must be defined}"
     shift
 
-    set_default_pa_arg
+    _rmq_env_set_erl_libs
 
     # Important: do not quote RABBITMQ_CTL_ERL_ARGS as they must be
     # word-split
     # shellcheck disable=SC2086
     exec erl +B \
-        $pa_arg \
         -boot "$CLEAN_BOOT_FILE" \
         -noinput -noshell -hidden -smp enable \
         $RABBITMQ_CTL_ERL_ARGS \

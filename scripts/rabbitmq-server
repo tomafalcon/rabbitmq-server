@@ -46,7 +46,6 @@ ensure_thread_pool_size() {
         RABBITMQ_IO_THREAD_POOL_SIZE=$(
             erl \
                 -noinput \
-                $pa_arg \
                 -boot "${CLEAN_BOOT_FILE}" \
                 -s rabbit_misc report_default_thread_pool_size
         )
@@ -73,7 +72,7 @@ check_not_empty() {
 start_rabbitmq_server() {
     set -e
 
-    set_default_pa_arg
+    _rmq_env_set_erl_libs
     ensure_thread_pool_size
 
     # We need to turn off path expansion because some of the vars,
@@ -91,7 +90,6 @@ start_rabbitmq_server() {
     # RABBITMQ_EBIN_ROOT, it must come as the second argument here.
     # https://github.com/rabbitmq/rabbitmq-server/issues/1777
     exec erl \
-        $pa_arg \
         -pa "$RABBITMQ_SERVER_CODE_PATH" \
         ${RABBITMQ_START_RABBIT} \
         -boot "${SASL_BOOT_FILE}" \
