@@ -205,26 +205,35 @@ generate_config_from_cuttlefish_files(Context,
       "Loading configuration files (Cuttlefish based):"),
     [rabbit_log_prelaunch:debug(
        "  - ~ts", [ConfigFile]) || ConfigFile <- ConfigFiles],
-    Config0 = cuttlefish_conf:files(ConfigFiles),
+    case cuttlefish_conf:files(ConfigFiles) of
+        {errorlist, Errors} ->
+            rabbit_log_prelaunch:error("Error generating configuration:", []),
+            [rabbit_log_prelaunch:error(
+               "  - ~ts",
+               [cuttlefish_error:xlate(Error)])
+             || Error <- Errors],
+            throw({error, failed_to_generate_configuration_file});
+        Config0 ->
+            %% Finalize configuration, based on the schema.
+            Config = case cuttlefish_generator:map(Schema, Config0) of
+                         {error, Phase, {errorlist, Errors}} ->
+                             %% TODO
+                             rabbit_log_prelaunch:error(
+                               "Error generating configuration in phase ~ts:",
+                               [Phase]),
+                             [rabbit_log_prelaunch:error(
+                                "  - ~ts",
+                                [cuttlefish_error:xlate(Error)])
+                              || Error <- Errors],
+                             throw(
+                               {error, failed_to_generate_configuration_file});
+                         ValidConfig ->
+                             proplists:delete(vm_args, ValidConfig)
+                     end,
 
-    %% Finalize configuration, based on the schema.
-    Config = case cuttlefish_generator:map(Schema, Config0) of
-                 {error, Phase, {errorlist, Errors}} ->
-                     %% TODO
-                     rabbit_log_prelaunch:error(
-                       "Error generating configuration in phase ~ts:",
-                       [Phase, Errors]),
-                     [rabbit_log_prelaunch:error(
-                        "  - ~ts",
-                        [cuttlefish_error:xlate(Error)])
-                      || Error <- Errors],
-                     throw({error, failed_to_generate_configuration_file});
-                 ValidConfig ->
-                     proplists:delete(vm_args, ValidConfig)
-             end,
-
-    %% Apply advanced configuration overrides, if any.
-    override_with_advanced_config(Config, AdvancedConfigFile).
+            %% Apply advanced configuration overrides, if any.
+            override_with_advanced_config(Config, AdvancedConfigFile)
+    end.
 
 find_cuttlefish_schemas(Context) ->
     Apps = list_apps(Context),
