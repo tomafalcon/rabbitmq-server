@@ -11,7 +11,7 @@
 
          %% client
          begin_stream/4,
-         ack/3,
+         credit/3,
          append/3,
 
          init_client/2,
@@ -72,7 +72,7 @@ apply(#{index := RaftIndex}, {append, _Evt},
                    eval.
 
 -record(stream, {next_offset :: stream_index(),
-                 ack_offset = 0 :: 0 | stream_index(),
+                 credit :: 0 | stream_index(),
                  max = 1000 :: non_neg_integer()}).
 
 -type aux_state() :: #{{pid(), ctag()} => #stream{}}.
@@ -86,28 +86,30 @@ init_aux(_) ->
     {no_reply, aux_state(), Log} when Log :: term().
 handle_aux(_RaMachine, _Type, {stream, Start, Max, Tag, Pid},
            Aux0, Log0, #?MODULE{cfg = Cfg} = MacState) ->
+    % rabbit_log:info("NEW STREAM: ~s", [Tag]),
     %% this works as a "skip to" function for exisiting streams. It does ignore
     %% any entries that are currently in flight
     %% read_cursor is the next item to read
     %% TODO: parse start offset and set accordingly
     Str0 = #stream{next_offset = max(1, Start),
+                   credit = Max,
                    max = Max},
     StreamId = {Tag, Pid},
     {Str, Window} = evalstream(Str0, MacState),
     Log = stream_entries(StreamId, Cfg, Window, Log0),
     AuxState = maps:put(StreamId, Str, Aux0),
     {no_reply, AuxState, Log};
-handle_aux(_RaMachine, _Type, {ack, {_CTag, Pid} = StreamId, AckIndex},
+handle_aux(_RaMachine, _Type, {credit, StreamId, Credit},
            Aux0, Log0, #?MODULE{cfg = Cfg} = MacState) ->
     case Aux0 of
-        #{StreamId := #stream{next_offset = Next} = Str0} ->
+        #{StreamId := #stream{credit = Credit0} = Str0} ->
             %% update stream with ack value, constrain it not to be larger than
             %% the read index in case the streaming pid has skipped around in
             %% the stream by issuing multiple stream/3 commands.
-            Str1 = Str0#stream{ack_offset = min(Next - 1, AckIndex)},
+            Str1 = Str0#stream{credit = Credit0 + Credit},
             {Str, Indexes} = evalstream(Str1, MacState),
             Log = stream_entries(StreamId, Cfg, Indexes, Log0),
-            Aux = maps:put(Pid, Str, Aux0),
+            Aux = maps:put(StreamId, Str, Aux0),
             {no_reply, Aux, Log};
         _ ->
             {no_reply, Aux0, Log0}
@@ -139,24 +141,23 @@ stream_entries({Tag, Pid}, #cfg{name = Name,
 %% evaluates if a stream needs furter entries
 %% returns a list of raft indexes that should be streamed and the updated
 %% stream as if the entries had been sent
-evalstream(#stream{next_offset = Next,
-                   ack_offset = Ack,
-                   max = Max} = Stream, #?MODULE{})
-  when Next - Ack > Max ->
+evalstream(#stream{credit = 0} = Stream, #?MODULE{}) ->
     % rabbit_log:info("evalstream max reached ~w", [Stream]),
     %% max in flight is reached, no further reads should be done
     {Stream, []};
 evalstream(#stream{next_offset = Next,
-                   ack_offset = Ack,
-                   max = Max} = Stream,
+                   credit = Credit} = Stream,
            #?MODULE{index = Index}) ->
     Head = rabbit_stream_index:current(Index),
-    UpTo = min(Next - Ack + Max, Head),
-    % rabbit_log:info("evalstream from ~w to ~w ~w", [Next, UpTo, Stream]),
+    UpTo = min(Next + Credit - 1, Head),
+    Cost = 1 + Next - UpTo,
+    % rabbit_log:info("evalstream from ~w to ~w ~w",
+    %                 [Next, UpTo, Stream]),
+    %% TODO: replace lists:seq with a fold over the index window
     Idxs = [{I, rabbit_stream_index:get(I, Index)} ||
              I <- lists:seq(Next, UpTo)],
-    %% TODO: replace lists:seq with a fold over the index window
-    {Stream#stream{next_offset = UpTo + 1}, Idxs}.
+    {Stream#stream{next_offset = UpTo + 1,
+                   credit = Credit - Cost}, Idxs}.
 
 %% CLIENT
 
@@ -208,8 +209,8 @@ begin_stream(#stream_client{local = ServerId} = State, Tag, Offset, MaxInFlight)
     ra:cast_aux_command(ServerId, {stream, Offset, MaxInFlight, Tag, Pid}),
     State.
 
-ack(#stream_client{local = ServerId} = State, Tag, StreamIndex) ->
-    ra:cast_aux_command(ServerId, {ack, {Tag, self()}, StreamIndex}),
+credit(#stream_client{local = ServerId} = State, Tag, Credit) ->
+    ra:cast_aux_command(ServerId, {credit, {Tag, self()}, Credit}),
     {ok, State}.
 
 %% MGMT

@@ -137,10 +137,11 @@ end_per_testcase(Testcase, Config) ->
 %% -------------------------------------------------------------------
 
 start(Config) ->
-    Server = rabbit_ct_broker_helpers:get_node_config(Config, 0, nodename),
+    % Server = rabbit_ct_broker_helpers:get_node_config(Config, 0, nodename),
+    [Server | _] = Servers = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
 
     Ch = rabbit_ct_client_helpers:open_channel(Config, Server),
-    Ch2 = rabbit_ct_client_helpers:open_channel(Config, Server),
+    Ch2 = rabbit_ct_client_helpers:open_channel(Config, lists:last(Servers)),
     QName = ?config(queue_name, Config),
     ?assertEqual({'queue.declare_ok', QName, 0, 0},
                  declare(Ch, QName, [{<<"x-queue-type">>, longstr, <<"stream">>}])),

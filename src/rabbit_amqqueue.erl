@@ -1443,8 +1443,8 @@ ack({Name, _} = QPid, {CTag, MsgIds}, _ChPid, QuorumStates)
             %% non-consecutive acking behaviour is currently undefined
             %% REALLY we should mandate multiple=true or ack a count
             %% rather than an explicit msgid
-            {ok, QState} = rabbit_stream_queue:ack(QState0, CTag,
-                                                   lists:max(MsgIds)),
+            {ok, QState} = rabbit_stream_queue:credit(QState0, CTag,
+                                                      length(MsgIds)),
             maps:put(Name, QState, QuorumStates);
         #{Name := QState0} ->
             {ok, QState} = rabbit_quorum_queue:ack(CTag, MsgIds, QState0),
