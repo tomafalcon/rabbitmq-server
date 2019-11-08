@@ -224,6 +224,7 @@
 -define(IS_CLASSIC(QPid), is_pid(QPid)).
 -define(IS_QUORUM(QPid), is_tuple(QPid)).
 
+-define(IS_STREAM(St), element(1,St) == stream_client).
 %%----------------------------------------------------------------------------
 
 -export_type([channel_number/0]).
@@ -665,6 +666,12 @@ handle_cast({deliver, _CTag, _AckReq, _Msg},
     noreply(State);
 handle_cast({deliver, ConsumerTag, AckRequired, Msg}, State) ->
     noreply(handle_deliver(ConsumerTag, AckRequired, Msg, State));
+handle_cast({stream_delivery, _CTag, _Idx, _Msg},
+            State = #ch{cfg = #conf{state = closing}}) ->
+    noreply(State);
+handle_cast({stream_delivery, ConsumerTag, _StreamIdx, Msg}, State) ->
+    %% streams always require acks for now
+    noreply(handle_deliver(ConsumerTag, true, Msg, State));
 
 handle_cast({deliver_reply, _K, _Del},
             State = #ch{cfg = #conf{state = closing}}) ->
@@ -737,11 +744,19 @@ handle_cast({reject_publish, MsgSeqNo, _QPid}, State = #ch{unconfirmed = UC}) ->
 handle_cast({confirm, MsgSeqNos, QPid}, State) ->
     noreply_coalesce(confirm(MsgSeqNos, QPid, State)).
 
-handle_info({ra_event, {Name, _} = From, _} = Evt,
+handle_info({ra_event, {Name, _} = From, EvtBody} = Evt,
             #ch{queue_states = QueueStates,
                 queue_names = QNames,
                 consumer_mapping = ConsumerMapping} = State0) ->
     case QueueStates of
+        #{Name := QState0} when ?IS_STREAM(QState0) ->
+            rabbit_log:info("ra event ~w", [Evt]),
+            {internal, MsgSeqNos, _Actions, QState1} =
+                rabbit_stream_queue:handle_event(From, EvtBody, QState0),
+            State = State0#ch{queue_states = maps:put(Name, QState1, QueueStates)},
+            rabbit_log:info("ra event msgsenos ~w", [MsgSeqNos]),
+            %% TODO: execute actions
+            noreply_coalesce(confirm(MsgSeqNos, Name, State));
         #{Name := QState0} ->
             QName = rabbit_quorum_queue:queue_name(QState0),
             case rabbit_quorum_queue:handle_event(Evt, QState0) of
@@ -864,7 +879,10 @@ handle_info(tick, State0 = #ch{queue_states = QueueStates0}) ->
       _     -> ok
     end,
     QueueStates1 =
-        maps:filter(fun(_, QS) ->
+        maps:filter(fun(_, QS) when ?IS_STREAM(QS) ->
+                            QName = rabbit_stream_queue:queue_name(QS),
+                            [] /= rabbit_amqqueue:lookup([QName]);
+                       (_, QS) ->
                             QName = rabbit_quorum_queue:queue_name(QS),
                             [] /= rabbit_amqqueue:lookup([QName])
                     end, QueueStates0),
