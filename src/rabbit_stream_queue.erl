@@ -151,11 +151,10 @@ evalstream(#stream{next_offset = Next,
                    max = Max} = Stream,
            #?MODULE{index = Index}) ->
     Head = rabbit_stream_index:current(Index),
-    UpTo = min(Next + Max - 1, Head),
-    From =  Ack + 1,
-    % rabbit_log:info("evalstream from ~w to ~w ~w", [From, UpTo, Stream]),
+    UpTo = min(Next - Ack + Max, Head),
+    % rabbit_log:info("evalstream from ~w to ~w ~w", [Next, UpTo, Stream]),
     Idxs = [{I, rabbit_stream_index:get(I, Index)} ||
-             I <- lists:seq(From, UpTo)],
+             I <- lists:seq(Next, UpTo)],
     %% TODO: replace lists:seq with a fold over the index window
     {Stream#stream{next_offset = UpTo + 1}, Idxs}.
 

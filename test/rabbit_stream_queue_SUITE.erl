@@ -145,35 +145,64 @@ start(Config) ->
     ?assertEqual({'queue.declare_ok', QName, 0, 0},
                  declare(Ch, QName, [{<<"x-queue-type">>, longstr, <<"stream">>}])),
     #'confirm.select_ok'{} = amqp_channel:call(Ch, #'confirm.select'{}),
-    subscribe(Ch2, QName, 100, []),
-    % publish_many(Ch, QName, 50),
-    publish_confirm(Ch, QName),
-    % publish_confirm(Ch, QName),
-    % publish_confirm(Ch, QName),
+    CTag1 = <<"ctag1">>,
+    subscribe(Ch2, CTag1, QName, 100, []),
+    publish_confirm(Ch, QName, <<"msg1">>),
     receive
-        {#'basic.deliver'{delivery_tag = _DeliveryTag,
+        {#'basic.deliver'{delivery_tag = DT1,
+                          consumer_tag = CTag1,
                           redelivered  = false}, Msg} ->
-            ct:pal("GOT ~w", [Msg]),
+            ct:pal("GOT ~w ~w", [DT1, Msg]),
+            flush(100),
             ok
     after 2000 ->
               exit(basic_deliver_timeout_1)
     end,
-    publish_confirm(Ch, QName),
+    publish_confirm(Ch, QName, <<"msg2">>),
     receive
-        {#'basic.deliver'{delivery_tag = _,
+        {#'basic.deliver'{delivery_tag = DT2,
+                          consumer_tag = CTag1,
                           redelivered  = false}, Msg2} ->
-            ct:pal("GOT ~w", [Msg2]),
+            ct:pal("GOT ~w ~w", [DT2, Msg2]),
+            flush(100),
             ok
     after 2000 ->
               exit(basic_deliver_timeout_2)
     end,
+    %% another consumer can read
+    Ch3 = rabbit_ct_client_helpers:open_channel(Config, Server),
+    CTag2 = <<"ctag2">>,
+    subscribe(Ch3, CTag2, QName, 1, []),
+    receive
+        {#'basic.deliver'{delivery_tag = DTag3,
+                          consumer_tag = CTag2,
+                          redelivered  = false}, Msg3} ->
+            ct:pal("~s GOT ~w", [CTag2, Msg3]),
+            amqp_channel:cast(Ch3, #'basic.ack'{delivery_tag = DTag3,
+                                                multiple = false}),
+            ok
+    after 2000 ->
+              exit(basic_deliver_timeout_3)
+    end,
+    receive
+        {#'basic.deliver'{delivery_tag = DTag4,
+                          consumer_tag = CTag2,
+                          redelivered  = false}, Msg4} ->
+            ct:pal("~s GOT ~w", [CTag2, Msg4]),
+            amqp_channel:cast(Ch3, #'basic.ack'{delivery_tag = DTag4,
+                                                multiple = false}),
+            ok
+    after 2000 ->
+              exit(basic_deliver_timeout_4)
+    end,
+    flush(100),
     ok.
 
 
 %% HELPERS
 
-publish_confirm(Ch, QName) ->
-    publish(Ch, QName),
+publish_confirm(Ch, QName, Msg) ->
+    publish(Ch, QName, Msg),
     amqp_channel:register_confirm_handler(Ch, self()),
     ct:pal("waiting for confirms from ~s", [QName]),
     ok = receive
@@ -186,10 +215,7 @@ publish_confirm(Ch, QName) ->
     ok.
 
 publish_many(Ch, Queue, Count) ->
-    [publish(Ch, Queue) || _ <- lists:seq(1, Count)].
-
-publish(Ch, Queue) ->
-    publish(Ch, Queue, <<"msg">>).
+    [publish(Ch, Queue, <<I:16/integer>>) || I <- lists:seq(1, Count)].
 
 publish(Ch, Queue, Msg) ->
     ok = amqp_channel:cast(Ch,
@@ -205,15 +231,15 @@ declare(Ch, Q, Args) ->
                                            auto_delete = false,
                                            arguments = Args}).
 
-subscribe(Ch, Queue, Prefetch, Args) ->
+subscribe(Ch, CTag, Queue, Prefetch, Args) ->
     qos(Ch, Prefetch),
     amqp_channel:subscribe(Ch, #'basic.consume'{queue = Queue,
                                                 no_ack = true,
                                                 arguments = Args,
-                                                consumer_tag = <<"ctag">>},
+                                                consumer_tag = CTag},
                            self()),
     receive
-        #'basic.consume_ok'{consumer_tag = <<"ctag">>} ->
+        #'basic.consume_ok'{consumer_tag = CTag} ->
              ok
     end.
 
@@ -221,3 +247,11 @@ qos(Ch, Prefetch) ->
     ?assertMatch(#'basic.qos_ok'{},
                  amqp_channel:call(Ch, #'basic.qos'{global = false,
                                                     prefetch_count = Prefetch})).
+
+flush(T) ->
+    receive X ->
+                ct:pal("flushed ~w", [X]),
+                flush(T)
+    after T ->
+              ok
+    end.
