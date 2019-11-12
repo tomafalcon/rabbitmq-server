@@ -49,7 +49,7 @@ groups() ->
 
 all_tests() ->
     [
-     start
+     roundtrip
     ].
 
 %% -------------------------------------------------------------------
@@ -136,7 +136,7 @@ end_per_testcase(Testcase, Config) ->
 %% Testcases.
 %% -------------------------------------------------------------------
 
-start(Config) ->
+roundtrip(Config) ->
     % Server = rabbit_ct_broker_helpers:get_node_config(Config, 0, nodename),
     [Server | _] = Servers = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
 
@@ -196,6 +196,7 @@ start(Config) ->
     after 2000 ->
               exit(basic_deliver_timeout_4)
     end,
+    cancel(Ch3, CTag2),
     flush(100),
     ok.
 
@@ -243,6 +244,9 @@ subscribe(Ch, CTag, Queue, Prefetch, Args) ->
         #'basic.consume_ok'{consumer_tag = CTag} ->
              ok
     end.
+
+cancel(Ch, CTag) ->
+    amqp_channel:call(Ch, #'basic.cancel'{consumer_tag = CTag}).
 
 qos(Ch, Prefetch) ->
     ?assertMatch(#'basic.qos_ok'{},

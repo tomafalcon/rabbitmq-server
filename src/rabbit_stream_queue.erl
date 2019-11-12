@@ -126,6 +126,8 @@ handle_aux(_RaMachine, _Type, eval,
 stream_entries({Tag, Pid}, #cfg{name = Name,
                                 id = Id}, Indexes, Log0) ->
     lists:foldl(fun({StrIdx, LogIdx}, L0) ->
+                        %% TODO: we need a more efficient log reading
+                        %% API here
                         {Entries, L} = ra_log:take(LogIdx, 1, L0),
                         %% TODO: batch deliveries
                         [begin
