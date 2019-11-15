@@ -11,6 +11,7 @@
 
          %% client
          begin_stream/4,
+         end_stream/2,
          credit/3,
          append/3,
 
@@ -28,8 +29,7 @@
 -record(cfg, {id :: ra:server_id(),
               name :: rabbit_types:r('queue')}).
 
--record(?MODULE, {cfg :: #cfg{},
-                  index = rabbit_stream_index:new() :: rabbit_stream_index:state()}).
+-record(?MODULE, {cfg :: #cfg{}}).
 
 -opaque state() :: #?MODULE{}.
 -type cmd() :: {append, Event :: term()}.
@@ -54,10 +54,10 @@ init(#{queue_name := QueueName,
 -spec apply(map(), cmd(), state()) ->
     {state(), stream_index(), list()}.
 apply(#{index := RaftIndex}, {append, _Evt},
-      #?MODULE{index = Index0} = State) ->
+      #?MODULE{} = State) ->
     % rabbit_log:info("append ~w", [_Evt]),
-    Index = rabbit_stream_index:incr(RaftIndex, Index0),
-    {State#?MODULE{index = Index}, RaftIndex, {aux, eval}}.
+    % Index = rabbit_stream_index:incr(RaftIndex, Index0),
+    {State, RaftIndex, {aux, eval}}.
 
 %% AUX
 
@@ -71,7 +71,7 @@ apply(#{index := RaftIndex}, {append, _Evt},
                    {stop_stream, pid()} |
                    eval.
 
--record(stream, {next_offset :: stream_index(),
+-record(stream, {next_index :: ra:index(),
                  credit :: 0 | stream_index(),
                  max = 1000 :: non_neg_integer()}).
 
@@ -85,81 +85,76 @@ init_aux(_) ->
 -spec handle_aux(term(), term(), aux_cmd(), aux_state(), Log, term()) ->
     {no_reply, aux_state(), Log} when Log :: term().
 handle_aux(_RaMachine, _Type, {stream, Start, Max, Tag, Pid},
-           Aux0, Log0, #?MODULE{cfg = Cfg} = MacState) ->
+           Aux0, Log0, #?MODULE{cfg = Cfg} = _MacState) ->
     % rabbit_log:info("NEW STREAM: ~s", [Tag]),
     %% this works as a "skip to" function for exisiting streams. It does ignore
     %% any entries that are currently in flight
     %% read_cursor is the next item to read
     %% TODO: parse start offset and set accordingly
-    Str0 = #stream{next_offset = max(1, Start),
+    Str0 = #stream{next_index = max(1, Start),
                    credit = Max,
                    max = Max},
     StreamId = {Tag, Pid},
-    {Str, Window} = evalstream(Str0, MacState),
-    Log = stream_entries(StreamId, Cfg, Window, Log0),
+    {Str, Log} = stream_entries(StreamId, Cfg, Str0, Log0),
     AuxState = maps:put(StreamId, Str, Aux0),
     {no_reply, AuxState, Log};
+handle_aux(_RaMachine, _Type, {end_stream, Tag, Pid},
+           Aux0, Log0, _MacState) ->
+    StreamId = {Tag, Pid},
+    {no_reply, maps:remove(StreamId, Aux0), Log0};
 handle_aux(_RaMachine, _Type, {credit, StreamId, Credit},
-           Aux0, Log0, #?MODULE{cfg = Cfg} = MacState) ->
+           Aux0, Log0, #?MODULE{cfg = Cfg} = _MacState) ->
     case Aux0 of
         #{StreamId := #stream{credit = Credit0} = Str0} ->
             %% update stream with ack value, constrain it not to be larger than
             %% the read index in case the streaming pid has skipped around in
             %% the stream by issuing multiple stream/3 commands.
             Str1 = Str0#stream{credit = Credit0 + Credit},
-            {Str, Indexes} = evalstream(Str1, MacState),
-            Log = stream_entries(StreamId, Cfg, Indexes, Log0),
+            {Str, Log} = stream_entries(StreamId, Cfg, Str1, Log0),
             Aux = maps:put(StreamId, Str, Aux0),
             {no_reply, Aux, Log};
         _ ->
             {no_reply, Aux0, Log0}
     end;
 handle_aux(_RaMachine, _Type, eval,
-           Aux0, Log0,  #?MODULE{cfg = Cfg} = MacState) ->
+           Aux0, Log0,  #?MODULE{cfg = Cfg} = _MacState) ->
     {Aux, Log} = maps:fold(fun (StreamId, S0, {A0, L0}) ->
-                                   {S, Idxs} = evalstream(S0, MacState),
-                                   {maps:put(StreamId, S, A0),
-                                    stream_entries(StreamId, Cfg, Idxs, L0)}
+                                   {S, L} = stream_entries(StreamId, Cfg, S0, L0),
+                                   {maps:put(StreamId, S, A0), L}
                            end, {#{}, Log0}, Aux0),
     {no_reply, Aux, Log}.
 
-stream_entries({Tag, Pid}, #cfg{name = Name,
-                                id = Id}, Indexes, Log0) ->
-    lists:foldl(fun({StrIdx, LogIdx}, L0) ->
-                        %% TODO: we need a more efficient log reading
-                        %% API here
-                        {Entries, L} = ra_log:take(LogIdx, 1, L0),
-                        %% TODO: batch deliveries
-                        [begin
-                             Msg = {Name, Id, StrIdx, false, Data},
-                             gen_server:cast(Pid,
-                                             {stream_delivery, Tag, StrIdx, Msg})
-                         end
-                         || {_, _, {'$usr', _, {append, Data}, _}}
-                                <- Entries],
-                        L
-                end, Log0, Indexes).
+stream_entries({Tag, Pid} = StreamId,
+               #cfg{name = Name, id = Id} = Cfg,
+               #stream{credit = Credit,
+                       next_index = NextIdx} = Str0,
+               Log0) ->
 
-%% evaluates if a stream needs furter entries
-%% returns a list of raft indexes that should be streamed and the updated
-%% stream as if the entries had been sent
-evalstream(#stream{credit = 0} = Stream, #?MODULE{}) ->
-    % rabbit_log:info("evalstream max reached ~w", [Stream]),
-    %% max in flight is reached, no further reads should be done
-    {Stream, []};
-evalstream(#stream{next_offset = Next,
-                   credit = Credit} = Stream,
-           #?MODULE{index = Index}) ->
-    Head = rabbit_stream_index:current(Index),
-    UpTo = min(Next + Credit - 1, Head),
-    Cost = 1 + Next - UpTo,
-    % rabbit_log:info("evalstream from ~w to ~w ~w",
-    %                 [Next, UpTo, Stream]),
-    %% TODO: replace lists:seq with a fold over the index window
-    Idxs = [{I, rabbit_stream_index:get(I, Index)} ||
-             I <- lists:seq(Next, UpTo)],
-    {Stream#stream{next_offset = UpTo + 1,
-                   credit = Credit - Cost}, Idxs}.
+    case ra_log:take(NextIdx, Credit, Log0) of
+        {[], Log} ->
+            {Str0, Log};
+        {Entries0, Log} ->
+            %% filter non usr append commands out
+            Msgs = [{Name, Id, Idx, false, Data}
+                    || {Idx, _, {'$usr', _, {append, Data}, _}} <- Entries0],
+            NumEntries = length(Entries0),
+            NumMsgs = length(Msgs),
+
+            %% TODO: noconnect and nosuspend should be used here
+            gen_server:cast(Pid, {stream_delivery, Tag, Msgs}),
+            Str = Str0#stream{credit = Credit - NumMsgs,
+                              next_index = NextIdx + NumEntries},
+            % {Str, Log}
+            case NumEntries ==  NumMsgs of
+                true ->
+                    %% we are done here
+                    {Str, Log};
+                false ->
+                    %% if there are fewer Msgs than Entries0 it means there were non-events
+                    %% in the log and we should recurse and try again
+                    stream_entries(StreamId, Cfg, Str, Log)
+            end
+    end.
 
 %% CLIENT
 
@@ -210,6 +205,12 @@ begin_stream(#stream_client{local = ServerId} = State, Tag, Offset, MaxInFlight)
     Pid = self(),
     ra:cast_aux_command(ServerId, {stream, Offset, MaxInFlight, Tag, Pid}),
     State.
+
+end_stream(#stream_client{local = ServerId} = State, Tag) ->
+    Pid = self(),
+    ra:cast_aux_command(ServerId, {end_stream, Tag, Pid}),
+    State.
+
 
 credit(#stream_client{local = ServerId} = State, Tag, Credit) ->
     ra:cast_aux_command(ServerId, {credit, {Tag, self()}, Credit}),

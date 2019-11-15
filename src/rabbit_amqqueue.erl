@@ -1641,6 +1641,14 @@ basic_cancel(Q, ChPid,
     {Name, _} = Id = amqqueue:get_pid(Q),
     QState0 = get_queue_client_state(Id, QStates),
     {ok, QState} = rabbit_quorum_queue:basic_cancel(ConsumerTag, ChPid, OkMsg, QState0),
+    {ok, maps:put(Name, QState, QStates)};
+basic_cancel(Q, ChPid,
+             ConsumerTag, OkMsg, _ActingUser, QStates)
+  when ?amqqueue_is_stream(Q) ->
+    {Name, _} = Id = amqqueue:get_pid(Q),
+    QState0 = get_queue_client_state(Id, QStates),
+    QState = rabbit_stream_queue:end_stream(QState0, ConsumerTag),
+    maybe_send_reply(ChPid, OkMsg),
     {ok, maps:put(Name, QState, QStates)}.
 
 -spec notify_decorators(amqqueue:amqqueue()) -> 'ok'.

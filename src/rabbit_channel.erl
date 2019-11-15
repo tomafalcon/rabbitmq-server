@@ -666,12 +666,16 @@ handle_cast({deliver, _CTag, _AckReq, _Msg},
     noreply(State);
 handle_cast({deliver, ConsumerTag, AckRequired, Msg}, State) ->
     noreply(handle_deliver(ConsumerTag, AckRequired, Msg, State));
-handle_cast({stream_delivery, _CTag, _Idx, _Msg},
+handle_cast({stream_delivery, _CTag, _Msg},
             State = #ch{cfg = #conf{state = closing}}) ->
     noreply(State);
-handle_cast({stream_delivery, ConsumerTag, _StreamIdx, Msg}, State) ->
+handle_cast({stream_delivery, ConsumerTag, Msgs}, State0) ->
     %% streams always require acks for now
-    noreply(handle_deliver(ConsumerTag, true, Msg, State));
+    State = lists:foldl(
+              fun(Msg, Acc) ->
+                      handle_deliver(ConsumerTag, true, Msg, Acc)
+              end, State0, Msgs),
+    noreply(State);
 
 handle_cast({deliver_reply, _K, _Del},
             State = #ch{cfg = #conf{state = closing}}) ->
